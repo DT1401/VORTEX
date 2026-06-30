@@ -1,4 +1,4 @@
-![VORTEX Logo](img\VORTEX.png){width=50, height=50}
+![VORTEX Logo](img/VORTEX.png){width=50, height=50}
 # VORTEX - Viral Ortholog Relationships, Taxonomy, and EXploration
 
 ## About VORTEX
