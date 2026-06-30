@@ -1,6 +1,7 @@
 <p align="center">
-  <img src="img/vortex.png" alt="vortex logo" width="50">
+  <img src="img/VORTEX.png" alt="vortex logo" width="250">
 </p>
+
 # VORTEX - Viral Ortholog Relationships, Taxonomy, and EXploration
 
 ## About VORTEX
