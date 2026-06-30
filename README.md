@@ -1,4 +1,6 @@
-![VORTEX Logo](img/VORTEX.png){width=50, height=50}
+<p align="center">
+  <img src="img/vortex.png" alt="vortex logo" width="50">
+</p>
 # VORTEX - Viral Ortholog Relationships, Taxonomy, and EXploration
 
 ## About VORTEX
