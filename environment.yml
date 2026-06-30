@@ -1,0 +1,22 @@
+#environment.yml
+name: vortex
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.12.13=hd63d673_0_cpython
+  - biopython=1.87=py312h4c3975b_0
+  - numpy=1.26.4=py312heda63a1_0
+  - pandas=2.1.4=py312hfb8ada1_0
+  - seaborn=0.13.2=hd8ed1ab_3
+  - matplotlib=3.10.8=py312h7900ff3_0
+  - tqdm=4.67.1=pyhd8ed1ab_1
+  - scikit-learn=1.8.0=np2py312h3226591_1
+  - scipy=1.17.1=py312h54fa4ab_0
+  - networkit=11.2=py312hf79963d_0
+  - libparquet=23.0.1=h7376487_4_cpu
+  - mmseqs2=18.8cc5c=hd6d6fdc_0
+  - umap-learn=0.5.12=py312h7900ff3_0
+  - upsetplot=0.9.0=pyhd8ed1ab_1
+  - python-duckdb=1.5.2=py312h1289d80_0
+  - plotly=6.6.0=pyhd8ed1ab_0
