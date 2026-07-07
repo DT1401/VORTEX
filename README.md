@@ -146,3 +146,4 @@ Command line arguments:
 > - Add utility script to calculate and plot intra- and inter-taxon metrics
 > - Add utility script to convert sparse matrix into standard csv
 > - Change output names to avoid 'taxonomy'
+> - Singleton nodes are dropped from the network output as they have no connected edges - resolve behaviour
