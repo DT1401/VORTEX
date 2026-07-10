@@ -21,7 +21,7 @@ import hashlib
 import warnings
 
 # Version information
-__version__ = "0.9.0b"
+__version__ = "0.9.1b"
 
 # Global flag to prevent HPC log file bloating and GIL hammering
 TQDM_DISABLE = not sys.stdout.isatty()
@@ -66,7 +66,7 @@ try:
 except Exception:
     HAS_UPSET = False
 
-# Networkit for High-Performance Graph Clustering
+# Networkit for Graph Clustering
 try:
     import networkit as nk
     HAS_NETWORKIT = True
@@ -202,7 +202,7 @@ def process_mmseqs_parquet_partitioned(
     con.execute(f"PRAGMA threads={threads}")
     con.execute(f"PRAGMA memory_limit='{duckdb_mem}'")
     
-    # 1. Disable insertion order to prevent massive memory buffering during PARTITION_BY
+    # 1. Disable insertion order to prevent memory buffering during PARTITION_BY
     con.execute("SET preserve_insertion_order=false;")
     
     # 2. Set a temporary directory so DuckDB can safely spill to disk instead of crashing
@@ -363,7 +363,7 @@ def load_and_calculate_jaccard(binary_prefix, logger=None):
     with open(cols_path, "r") as f: genomes = [line.strip() for line in f if line.strip()]
     num_genomes = len(genomes)
 
-    # Load and transpose to Genomes x Clusters for the dot product
+    # Load and instantly transpose to (Genomes x Clusters) for the dot product
     A = sp.load_npz(mat_path).transpose().tocsr().astype(np.float32)
     row_sums = A.sum(axis=1).A1 
 
@@ -492,11 +492,11 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
     lineage_res, sig_res = [], []
     if logger: logger.info("Building Strict Phage Taxonomy via Hybrid Network/Complete Linkage...")
 
-    # Step 1: Broad Network Sweep to find disconnected "Islands"
+    # Step 1: Broad Network Sweep (Find disconnected "Islands")
     root_indices = list(range(num_genomes))
     global_network_file = os.path.join(output_dir, "phage_global_network_edges.csv")
     
-    # Use a permissive Jaccard (0.05) to group distant relatives into islands
+    # Use a permissive Jaccard threshold (0.05) to group distant relatives into islands.
     islands_map = get_partition_map(build_graph(root_indices, 0.05, save_edgelist_path=global_network_file), use_leiden=False)
     
     global_fam_counter = 1
@@ -514,12 +514,12 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
             sf_label = f"{f_label}_SF_{global_subfam_counter}"
             g_label = f"{sf_label}_G_{global_genus_counter}"
             
-            # Also calculate actual core genes for the singletons (=total number of proteins)
+            # Calculate actual core genes for the singleton
             single_idx = [island_idx[0]]
             singleton_core = get_core(single_idx, threshold=0.90)
             core_count = len(singleton_core)
             
-            # Record signatures for unique lineage
+            # Record signatures for this unique lineage
             for ci in singleton_core:
                 c_id = rows_df.iloc[ci]["cluster_id"]
                 desc = rows_df.iloc[ci]["description"]
@@ -538,7 +538,7 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
         island_dist_matrix = square_dist[np.ix_(island_idx, island_idx)]
         island_condensed = squareform(island_dist_matrix, checks=False)
         
-        # Run Complete Linkage to enforce strict global minimums and eliminate chaining)
+        # Run Complete Linkage (Forces strict global minimums, eliminating chaining)
         Z = linkage(island_condensed, method='complete')
         
         # Define taxonomic cuts based on Distance (Distance = 1.0 - Jaccard)
@@ -594,7 +594,7 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
     # Export Final Taxonomy and Signatures
     pd.DataFrame(lineage_res).to_csv(os.path.join(output_dir, "phage_taxonomy.csv"), index=False)
     pd.DataFrame(sig_res).to_csv(os.path.join(output_dir, "phage_signatures.csv"), index=False)
-    if logger: logger.info("Hierarchical analysis complete...")
+    if logger: logger.info("Hierarchical analysis complete!")
 
 def generate_jaccard_nexus(genomes, square_dist, output_nex, logger=None):
     if genomes is None or square_dist is None: return
@@ -721,7 +721,6 @@ def plot_upset_clusters(binary_prefix, output_plot, logger=None):
         mat = sp.load_npz(mat_path).tocsr()
         powers_of_two = (1 << np.arange(num_genomes)).astype(np.int64)
         
-        # Absolute peak optimization: A single dense dot product replaces 50,000 Python loops
         bitmasks = mat.dot(powers_of_two)
         global_bit_counts = np.bincount(bitmasks)
 
@@ -737,7 +736,6 @@ def plot_upset_clusters(binary_prefix, output_plot, logger=None):
 
         upset_series = from_memberships(memberships, data=counts)
         temp_df = pd.DataFrame({"count": upset_series.values, "degree": upset_series.index.to_frame().sum(axis=1)}, index=upset_series.index).sort_values(by=["degree", "count"], ascending=[False, False]).head(40)
-        # temp fix to disable pandas copy-on-write to fix upsetplot
         try:
             pd.options.mode.copy_on_write = False
         except Exception:
@@ -786,11 +784,10 @@ def main():
     elif args.input_dir:
         gb_files = sorted([f for f in os.listdir(args.input_dir) if f.endswith(".gb") or f.endswith(".gbk")])
         if not gb_files: logger.error("No GenBank files found."); sys.exit(1)
-        logger.info(f"Extracting proteins from {len(gb_files)} GenBank files...")
-        protein_counter = 1
         with open(output_fasta, "w") as out_handle:
             for f in tqdm(gb_files, disable=TQDM_DISABLE):
-                protein_counter = extract_proteins(os.path.join(args.input_dir, f), out_handle, protein_counter, logger)
+                protein_counter = 1 # Reset the counter for each new genome
+                extract_proteins(os.path.join(args.input_dir, f), out_handle, protein_counter, logger)
 
     for min_seq_id in [float(x.strip()) for x in args.min_seq_ids.split(",") if x.strip()]:
         seqid_str = str(min_seq_id).replace(".", "_")
