@@ -95,6 +95,26 @@ def setup_logger(log_file=None, console_level=logging.INFO):
 
     return logger
 
+def filter_duplicate_fasta(input_file, output_file, logger=None):
+    """
+    Reads a FASTA file and writes it to an output file, skipping any 
+    duplicate IDs to ensure downstream dictionary operations and MMseqs2 
+    do not silently drop or merge sequences unpredictably.
+    """
+    seen_ids = set()
+    skipped_count = 0
+    
+    with open(output_file, "w") as out_f:
+        for record in SeqIO.parse(input_file, "fasta"):
+            if record.id in seen_ids:
+                skipped_count += 1
+                continue # Skip writing this record
+            
+            seen_ids.add(record.id)
+            SeqIO.write(record, out_f, "fasta")
+            
+    if skipped_count > 0 and logger:
+        logger.warning(f"Skipped {skipped_count} duplicate FASTA records to maintain ID uniqueness.")
 
 def extract_proteins(genbank_file, out_handle, protein_counter, logger=None):
     try:
@@ -202,10 +222,10 @@ def process_mmseqs_parquet_partitioned(
     con.execute(f"PRAGMA threads={threads}")
     con.execute(f"PRAGMA memory_limit='{duckdb_mem}'")
     
-    # 1. Disable insertion order to prevent memory buffering during PARTITION_BY
+    # Disable insertion order to prevent massive memory buffering during PARTITION_BY
     con.execute("SET preserve_insertion_order=false;")
     
-    # 2. Set a temporary directory so DuckDB can safely spill to disk instead of crashing
+    # Set a temporary directory so DuckDB can safely spill to disk instead of crashing
     spill_dir = os.path.join(tempfile.gettempdir(), "duckdb_spill")
     os.makedirs(spill_dir, exist_ok=True)
     con.execute(f"SET temp_directory='{spill_dir}';")
@@ -238,7 +258,7 @@ def process_mmseqs_parquet_partitioned(
                     ORDER BY genome
                 ) TO '{parquet_dir}' (FORMAT PARQUET, PARTITION_BY genome);
             """)
-            # ------------------------
+
             
         except subprocess.CalledProcessError as e:
             if logger: logger.error(f"MMseqs convertalis failed: {e.stderr.decode('utf-8') if e.stderr else 'Unknown'}")
@@ -363,7 +383,7 @@ def load_and_calculate_jaccard(binary_prefix, logger=None):
     with open(cols_path, "r") as f: genomes = [line.strip() for line in f if line.strip()]
     num_genomes = len(genomes)
 
-    # Load and instantly transpose to (Genomes x Clusters) for the dot product
+    # Load and transpose to Genomes x Clusters for the dot product
     A = sp.load_npz(mat_path).transpose().tocsr().astype(np.float32)
     row_sums = A.sum(axis=1).A1 
 
@@ -471,7 +491,7 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
                 global_comm_id += 1
                 continue
             
-            # Safe Leiden execution (kept for structural integrity, though bypassed for Family islands)
+            # Safe Leiden execution (though bypassed for Family islands)
             raw_subgraph = nk.graphtools.subgraphFromNodes(graph, comp_nodes)
             subgraph = nk.graph.Graph(len(comp_nodes), weighted=True)
             new_to_old = {new: old for new, old in enumerate(comp_nodes)}
@@ -492,11 +512,11 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
     lineage_res, sig_res = [], []
     if logger: logger.info("Building Strict Phage Taxonomy via Hybrid Network/Complete Linkage...")
 
-    # Step 1: Broad Network Sweep (Find disconnected "Islands")
+    # Step 1: Broad Network Sweep to identify disconnected "Islands"
     root_indices = list(range(num_genomes))
     global_network_file = os.path.join(output_dir, "phage_global_network_edges.csv")
     
-    # Use a permissive Jaccard threshold (0.05) to group distant relatives into islands.
+    # Use a permissive Jaccard (0.05) to group distant relatives into islands.
     islands_map = get_partition_map(build_graph(root_indices, 0.05, save_edgelist_path=global_network_file), use_leiden=False)
     
     global_fam_counter = 1
@@ -508,13 +528,13 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
         if len(island_local_idx) < 1: continue
         island_idx = [root_indices[i] for i in island_local_idx]
         
-    # If it's a single genome, it represents its own lineage
+    # If it is a singleton genome, it represents its own lineage
         if len(island_idx) == 1:
             f_label = f"Family_{global_fam_counter}"
             sf_label = f"{f_label}_SF_{global_subfam_counter}"
             g_label = f"{sf_label}_G_{global_genus_counter}"
             
-            # Calculate actual core genes for the singleton
+            # Calculate core genes for the singleton
             single_idx = [island_idx[0]]
             singleton_core = get_core(single_idx, threshold=0.90)
             core_count = len(singleton_core)
@@ -721,6 +741,7 @@ def plot_upset_clusters(binary_prefix, output_plot, logger=None):
         mat = sp.load_npz(mat_path).tocsr()
         powers_of_two = (1 << np.arange(num_genomes)).astype(np.int64)
         
+        # Absolute peak optimization: A single dense dot product replaces 50,000 Python loops
         bitmasks = mat.dot(powers_of_two)
         global_bit_counts = np.bincount(bitmasks)
 
@@ -736,6 +757,7 @@ def plot_upset_clusters(binary_prefix, output_plot, logger=None):
 
         upset_series = from_memberships(memberships, data=counts)
         temp_df = pd.DataFrame({"count": upset_series.values, "degree": upset_series.index.to_frame().sum(axis=1)}, index=upset_series.index).sort_values(by=["degree", "count"], ascending=[False, False]).head(40)
+        # temp fix to disable pandas copy-on-write to fix upsetplot
         try:
             pd.options.mode.copy_on_write = False
         except Exception:
@@ -780,7 +802,8 @@ def main():
 
     output_fasta = os.path.join(args.output_dir, "all_proteins.fasta")
     if args.input_fasta:
-        shutil.copyfile(args.input_fasta, output_fasta)
+        logger.info("Processing input FASTA and filtering out duplicate IDs...")
+        filter_duplicate_fasta(args.input_fasta, output_fasta, logger)
     elif args.input_dir:
         gb_files = sorted([f for f in os.listdir(args.input_dir) if f.endswith(".gb") or f.endswith(".gbk")])
         if not gb_files: logger.error("No GenBank files found."); sys.exit(1)
@@ -792,7 +815,7 @@ def main():
     for min_seq_id in [float(x.strip()) for x in args.min_seq_ids.split(",") if x.strip()]:
         seqid_str = str(min_seq_id).replace(".", "_")
         
-        # Set up run-specific subfolders ---
+        # Set up run-specific subfolders
         run_base_dir = os.path.join(args.output_dir, f"mmseqs_seqid_{seqid_str}")
         logs_dir = os.path.join(run_base_dir, "logs")
         results_dir = os.path.join(run_base_dir, "results")
@@ -806,7 +829,7 @@ def main():
         tmp_dir = os.path.join(run_base_dir, "tmp")
         cluster_tsv_file = os.path.join(run_base_dir, "cluster_mapping.tsv")
         
-        # --- NEW: Route logs to logs_dir ---
+        # Route logs to logs_dir
         log_files = {
             "createdb": os.path.join(logs_dir, "createdb.log"), 
             "cluster": os.path.join(logs_dir, "cluster.log"), 
