@@ -139,11 +139,29 @@ Command line arguments:
 --accessions - Text file containing genome accessions to keep (one per line, no header)
 ```
 
+### scrape_vmr.py
+This script can be used to download and parse the ICTV Virus Metadata Resource to create a metadata file compatible with VORTEX.
+
+Command line arguments
+```
+-o, --output - Path to store the output CSV file
+--url VMR Download URL (defaults to the current latest release) from https://ictv.global/vmr/current
+--host - an optional flag to filter the output by the 'Host source' field using a case-insensitive substring match, e.g., bacteria or archaea,bacteria
+```
+
+### expand_sparse_matrix.py
+This script can be used to expand the sparse-matrix format, creating a single csv file of the protein presence/absence and count matrices. Beware, for large datasets these files will be very large.
+
+Command line arguments
+```
+-d, --dir - path to the results directory containing the protein_cluster_matrix_binary_ and protein_cluster_matrix_counts
+```
+
 ## To-do
 > - Simply input flags, allow mixed input types e.g. fasta + GenBank?
-> - Map all annotation columns to network output, not just the once specified
-> - Add utility script to scrape VMR and generate a metadata file
+> - ~~Map all annotation columns to network output, not just the one specified~~
+> - ~~Add utility script to scrape VMR and generate a metadata file~~
 > - Add utility script to calculate and plot intra- and inter-taxon metrics
-> - Add utility script to convert sparse matrix into standard csv
+> - ~~Add utility script to convert sparse matrix into standard csv~~
 > - Change output names to avoid 'taxonomy'
 > - Singleton nodes are dropped from the network output as they have no connected edges - resolve behaviour
