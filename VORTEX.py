@@ -21,9 +21,8 @@ import hashlib
 import warnings
 
 # Version information
-__version__ = "0.9.1b"
+__version__ = "0.9.3b"
 
-# Global flag to prevent HPC log file bloating and GIL hammering
 TQDM_DISABLE = not sys.stdout.isatty()
 
 # DuckDB for Out-Of-Core Parquet Processing
@@ -33,11 +32,11 @@ try:
 except Exception:
     HAS_DUCKDB = False
 
-# Core Visualization imports (Heatmaps & Dendrograms)
+# Visualization imports (Heatmaps & Dendrograms)
 try:
     import seaborn as sns
     import matplotlib.pyplot as plt
-    from scipy.cluster.hierarchy import linkage, to_tree, fcluster
+    from scipy.cluster.hierarchy import linkage, to_tree, fcluster, leaves_list
     from scipy.spatial.distance import squareform
     HAS_CORE_VIS = True
 except Exception:
@@ -66,7 +65,7 @@ try:
 except Exception:
     HAS_UPSET = False
 
-# Networkit for Graph Clustering
+# Networkit imports
 try:
     import networkit as nk
     HAS_NETWORKIT = True
@@ -128,7 +127,6 @@ def extract_proteins(genbank_file, out_handle, protein_counter, logger=None):
                         protein_sequence = feature.qualifiers["translation"][0]
                         product = feature.qualifiers.get("product", ["Unknown"])[0]
                         protein_acc = feature.qualifiers.get("protein_id", ["Unknown"])[0]
-                        
                         protein_id = f"{safe_genome_id}_{protein_counter}"
                         out_handle.write(f">{protein_id} {product} {protein_acc}\n{protein_sequence}\n")
                         protein_counter += 1
@@ -153,7 +151,7 @@ def run_mmseqs(input_file, cluster_tsv_file, log, threads, config, db_path, clus
     os.makedirs(params["cluster_db_path"], exist_ok=True)
 
     createdb_cmd = f"mmseqs createdb {input_file} {params['db_path']}/{params['db']}"
-    cluster_cmd = f"mmseqs cluster {params['db_path']}/{params['db']} {params['cluster_db_path']}/{params['cluster_db']} {tmp_dir} --min-seq-id {params['min_seq_id']} --cov-mode {params['cov_mode']} --threads {threads} -s {params['sensitivity']} -c {params['coverage']}"
+    cluster_cmd = f"mmseqs cluster {params['db_path']}/{params['db']} {params['cluster_db_path']}/{params['cluster_db']} {tmp_dir} --min-seq-id {params['min_seq_id']} --cov-mode {params['cov_mode']} --threads {threads} -s {params['sensitivity']} -c {params['coverage']} --cluster-mode 1"
     align_db = f"{params['cluster_db_path']}/{params['cluster_db']}_aligned"
     align_cmd = f"mmseqs align {params['db_path']}/{params['db']} {params['db_path']}/{params['db']} {params['cluster_db_path']}/{params['cluster_db']} {align_db} --threads {threads} -a -c {params['coverage']} --min-seq-id {params['min_seq_id']}"
     createtsv_cmd = f"mmseqs createtsv {params['db_path']}/{params['db']} {params['db_path']}/{params['db']} {params['cluster_db_path']}/{params['cluster_db']} {cluster_tsv_file} --threads {threads}"
@@ -225,11 +223,10 @@ def process_mmseqs_parquet_partitioned(
     # Disable insertion order to prevent massive memory buffering during PARTITION_BY
     con.execute("SET preserve_insertion_order=false;")
     
-    # Set a temporary directory so DuckDB can safely spill to disk instead of crashing
+    # et a temporary directory so DuckDB can safely spill to disk instead of crashing
     spill_dir = os.path.join(tempfile.gettempdir(), "duckdb_spill")
     os.makedirs(spill_dir, exist_ok=True)
     con.execute(f"SET temp_directory='{spill_dir}';")
-    # ------------------------
     
     mapping_df = pd.DataFrame(list(cluster_mapping.items()), columns=['query', 'cluster_name'])
     con.register('mapping_df', mapping_df)
@@ -247,7 +244,6 @@ def process_mmseqs_parquet_partitioned(
             subprocess.run(convertalis_cmd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             if logger: logger.info("Partitioning TSV into Parquet via DuckDB...")
             
-            # Added 'ORDER BY genome' at the end of the SELECT statement so it writes one genome at a time
             con.execute(f"""
                 COPY (
                     SELECT COALESCE(m.cluster_name, t.query) AS cluster_name,
@@ -258,7 +254,7 @@ def process_mmseqs_parquet_partitioned(
                     ORDER BY genome
                 ) TO '{parquet_dir}' (FORMAT PARQUET, PARTITION_BY genome);
             """)
-
+            # ------------------------
             
         except subprocess.CalledProcessError as e:
             if logger: logger.error(f"MMseqs convertalis failed: {e.stderr.decode('utf-8') if e.stderr else 'Unknown'}")
@@ -266,7 +262,7 @@ def process_mmseqs_parquet_partitioned(
         finally:
             if os.path.exists(temp_tsv_path): os.remove(temp_tsv_path)
 
-    if logger: logger.info("Calculating cluster robustness metrics from Parquet...")
+    if logger: logger.info("Calculating cluster metrics from Parquet...")
     robustness_df = con.execute(f"""
         WITH mmseqs_data AS (SELECT * FROM read_parquet('{os.path.join(parquet_dir, "**", "*.parquet").replace(chr(92), "/")}'))
         SELECT s.cluster_name as cluster_id, count(DISTINCT s.genome) as num_unique_genomes,
@@ -332,6 +328,18 @@ def create_sparse_matrix(cluster_records, all_genomes, output_prefix, desc_dict,
     for r_id, (cluster_name, genome_ids) in enumerate(tqdm(cluster_records, desc="Encoding sparse rows", disable=TQDM_DISABLE)):
         row_dict = {"cluster_id": cluster_name, "description": desc_dict.get(cluster_name, "Unknown")}
         for col in rob_cols: row_dict[col] = robustness_dict.get(cluster_name, {}).get(col, 0)
+        
+        # Synchronize all genome counts directly with the parsed .faa files
+        import collections
+        genome_counts = collections.Counter(genome_ids)
+        
+        # The number of unique genomes is the number of keys in the counter
+        row_dict["num_unique_genomes"] = len(genome_counts)
+        
+        # The max paralogs is the highest count value found for any single genome
+        row_dict["max_paralogs_per_genome"] = max(genome_counts.values()) if genome_counts else 0
+
+        
         row_metadata.append(row_dict)
 
         if binary:
@@ -343,14 +351,14 @@ def create_sparse_matrix(cluster_records, all_genomes, output_prefix, desc_dict,
                 if g in genome_to_idx:
                     row_idx.append(r_id); col_idx.append(genome_to_idx[g]); data.append(count)
 
-    # 1. Save Sparse Matrix
+    # Save Sparse Matrix
     sparse_mat = sp.coo_matrix((data, (row_idx, col_idx)), shape=(len(cluster_records), len(sorted_genomes))).tocsr()
     sp.save_npz(f"{output_prefix}_matrix.npz", sparse_mat)
 
-    # 2. Save Row Index (Clusters + Metadata)
+    # Save Row Index (Clusters + Metadata)
     pd.DataFrame(row_metadata).to_csv(f"{output_prefix}_rows.csv", index=False)
 
-    # 3. Save Column Index (Genomes)
+    # Save Column Index (Genomes)
     with open(f"{output_prefix}_cols.txt", "w") as f: f.write("\n".join(sorted_genomes) + "\n")
 
 
@@ -361,7 +369,7 @@ def extract_core_clusters(binary_prefix, core_output_csv, logger=None):
     if logger: logger.info("Extracting core clusters from native sparse matrix...")
     mat = sp.load_npz(mat_path)
     
-    # Exact C-level row sums. If sum == num_genomes, it is core.
+    # Row sums. If sum == num_genomes, it is core.
     core_indices = np.where(mat.sum(axis=1).A1 == mat.shape[1])[0]
     
     rows_df = pd.read_csv(rows_path)
@@ -378,12 +386,12 @@ def load_and_calculate_jaccard(binary_prefix, logger=None):
     mat_path, cols_path = f"{binary_prefix}_matrix.npz", f"{binary_prefix}_cols.txt"
     if not HAS_SCALABLE_VIS or not os.path.exists(mat_path): return None, None, None, None
 
-    if logger: logger.info("Loading C-speed sparse matrix and calculating exact Jaccard distances...")
+    if logger: logger.info("Loading sparse matrix and calculating exact Jaccard distances...")
 
     with open(cols_path, "r") as f: genomes = [line.strip() for line in f if line.strip()]
     num_genomes = len(genomes)
 
-    # Load and transpose to Genomes x Clusters for the dot product
+    # Load and transpose to (Genomes x Clusters) for the dot product
     A = sp.load_npz(mat_path).transpose().tocsr().astype(np.float32)
     row_sums = A.sum(axis=1).A1 
 
@@ -404,7 +412,7 @@ def load_and_calculate_jaccard(binary_prefix, logger=None):
     square_dist = np.clip(square_dist, 0.0, 1.0) 
     return genomes, A, square_dist, squareform(square_dist, checks=False)
 
-def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=5, metadata_file=None, color_col="Family", logger=None, square_dist=None):
+def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=2, metadata_file=None, colour_col="Family", network_cols="all", logger=None, square_dist=None):
     if not HAS_NETWORKIT:
         if logger: logger.error("NetworKit not installed. Skipping hierarchy.")
         return
@@ -423,15 +431,35 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
     A = sp.load_npz(mat_path).transpose().tocsr().astype(np.float32)
     num_genomes = A.shape[0]
 
-    # --- External Metadata Loading for Network Export ---
+    # Load the corresponding count matrix to get the total number of proteins per genome
+    count_mat_path = mat_path.replace("_binary", "_count")
+    if os.path.exists(count_mat_path):
+        count_mat = sp.load_npz(count_mat_path).transpose().tocsr()
+        protein_counts = count_mat.sum(axis=1).A1
+        genome_prot_counts = {genomes[i]: int(protein_counts[i]) for i in range(num_genomes)}
+    else:
+        genome_prot_counts = collections.defaultdict(int)
+
+    # External Metadata Loading for Network Export
     meta_dict = {}
+    target_cols = []
+    
     if metadata_file and os.path.exists(metadata_file):
         try:
             m_df = pd.read_csv(metadata_file, dtype=str)
             if "Genome" not in m_df.columns:
                 m_df.rename(columns={m_df.columns[0]: "Genome"}, inplace=True)
-            if color_col in m_df.columns:
-                meta_dict = dict(zip(m_df["Genome"], m_df[color_col]))
+                
+            # Determine which columns to keep based on the user's input
+            if network_cols.lower() == "all":
+                target_cols = [c for c in m_df.columns if c != "Genome"]
+            else:
+                target_cols = [c.strip() for c in network_cols.split(",") if c.strip() in m_df.columns]
+                
+            # Convert to a nested dictionary: {genome_id: {col1: val1, col2: val2}}
+            m_df.set_index("Genome", inplace=True)
+            meta_dict = m_df.to_dict(orient="index")
+            
         except Exception as e:
             if logger: logger.warning(f"Could not load metadata for graph mapping: {e}")
 
@@ -455,16 +483,24 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
                         G.addEdge(i, j, sim)
                         
                         if save_edgelist_path:
+                            # These two lines define the variables and must come first
                             source_genome = genomes[indices[i]]
                             target_genome = genomes[indices[j]]
-                            edges_for_export.append({
+                            
+                            # Base edge data
+                            edge_data = {
                                 "Source": source_genome,
                                 "Target": target_genome,
                                 "Weight": round(sim, 4),
-                                "Shared_Clusters": int(intersection),
-                                f"Source_{color_col}": meta_dict.get(source_genome, "Unknown"),
-                                f"Target_{color_col}": meta_dict.get(target_genome, "Unknown")
-                            })
+                                "Shared_Clusters": int(intersection)
+                            }
+                            
+                            # Dynamically add all requested metadata columns
+                            for col in target_cols:
+                                edge_data[f"Source_{col}"] = meta_dict.get(source_genome, {}).get(col, "Unknown")
+                                edge_data[f"Target_{col}"] = meta_dict.get(target_genome, {}).get(col, "Unknown")
+                                
+                            edges_for_export.append(edge_data)
         
         if save_edgelist_path and edges_for_export:
             pd.DataFrame(edges_for_export).to_csv(save_edgelist_path, index=False)
@@ -484,14 +520,14 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
         cc.run()
         
         for comp_nodes in cc.getComponents():
-            # Bypass Leiden if requested or if it's a single node
+            # Bypass if requested or if it's a single node
             if len(comp_nodes) == 1 or not use_leiden:
                 for node in comp_nodes:
                     comm_map[global_comm_id].append(node)
                 global_comm_id += 1
                 continue
             
-            # Safe Leiden execution (though bypassed for Family islands)
+            # Leiden execution (retained for structural integrity, though now bypassed for Family islands)
             raw_subgraph = nk.graphtools.subgraphFromNodes(graph, comp_nodes)
             subgraph = nk.graph.Graph(len(comp_nodes), weighted=True)
             new_to_old = {new: old for new, old in enumerate(comp_nodes)}
@@ -512,34 +548,34 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
     lineage_res, sig_res = [], []
     if logger: logger.info("Building Strict Phage Taxonomy via Hybrid Network/Complete Linkage...")
 
-    # Step 1: Broad Network Sweep to identify disconnected "Islands"
+    # Broad Network Sweep (Find disconnected "Islands")
     root_indices = list(range(num_genomes))
     global_network_file = os.path.join(output_dir, "phage_global_network_edges.csv")
     
-    # Use a permissive Jaccard (0.05) to group distant relatives into islands.
+    # Use a permissive Jaccard (0.05) to group distant relatives into islands
     islands_map = get_partition_map(build_graph(root_indices, 0.05, save_edgelist_path=global_network_file), use_leiden=False)
     
     global_fam_counter = 1
     global_subfam_counter = 1
     global_genus_counter = 1
 
-    # Step 2: Parse and Split Families using Complete Linkage
+    # Parse and Split Families using Complete Linkage
     for island_id, island_local_idx in islands_map.items():
         if len(island_local_idx) < 1: continue
         island_idx = [root_indices[i] for i in island_local_idx]
         
-    # If it is a singleton genome, it represents its own lineage
+    # If it's a single genome, it represents its own lineage
         if len(island_idx) == 1:
             f_label = f"Family_{global_fam_counter}"
             sf_label = f"{f_label}_SF_{global_subfam_counter}"
             g_label = f"{sf_label}_G_{global_genus_counter}"
             
-            # Calculate core genes for the singleton
+            # Calculate actual core genes for the singleton
             single_idx = [island_idx[0]]
             singleton_core = get_core(single_idx, threshold=0.90)
             core_count = len(singleton_core)
             
-            # Record signatures for this unique lineage
+            # Record signatures for each unique lineage
             for ci in singleton_core:
                 c_id = rows_df.iloc[ci]["cluster_id"]
                 desc = rows_df.iloc[ci]["description"]
@@ -548,7 +584,7 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
                 sig_res.append({"Rank": "Genus", "Lineage": g_label, "Cluster": c_id, "Desc": desc})
             
             lineage_res.append({
-                "Genome": genomes[island_idx[0]], "Family": f_label, "Subfamily": sf_label, "Genus": g_label,
+                "Genome": genomes[island_idx[0]], "Total_Proteins": genome_prot_counts[genomes[island_idx[0]]], "Family": f_label, "Subfamily": sf_label, "Genus": g_label,
                 "Family_Core": core_count, "Subfamily_Core": core_count, "Genus_Core": core_count
             })
             global_fam_counter += 1; global_subfam_counter += 1; global_genus_counter += 1
@@ -558,11 +594,11 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
         island_dist_matrix = square_dist[np.ix_(island_idx, island_idx)]
         island_condensed = squareform(island_dist_matrix, checks=False)
         
-        # Run Complete Linkage (Forces strict global minimums, eliminating chaining)
+        # Run Complete Linkage - added to eliminate chaining effects
         Z = linkage(island_condensed, method='complete')
         
         # Define taxonomic cuts based on Distance (Distance = 1.0 - Jaccard)
-        fam_labels = fcluster(Z, t=0.90, criterion='distance')      # Max distance 0.90 (Min 10% shared globally)
+        fam_labels = fcluster(Z, t=0.95, criterion='distance')      # Max distance 0.90 (Min 5% shared globally)
         subfam_labels = fcluster(Z, t=0.70, criterion='distance')   # Max distance 0.70 (Min 30% shared globally)
         genus_labels = fcluster(Z, t=0.40, criterion='distance')    # Max distance 0.40 (Min 60% shared globally)
 
@@ -607,12 +643,43 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
                     
                     for i_val in g_idx:
                         lineage_res.append({
-                            "Genome": genomes[i_val], "Family": f_label, "Subfamily": sf_label, "Genus": g_label, 
+                            "Genome": genomes[i_val], "Total_Proteins": genome_prot_counts[genomes[i_val]], "Family": f_label, "Subfamily": sf_label, "Genus": g_label, 
                             "Family_Core": len(f_core), "Subfamily_Core": len(sf_core), "Genus_Core": len(g_core)
                         })
 
     # Export Final Taxonomy and Signatures
-    pd.DataFrame(lineage_res).to_csv(os.path.join(output_dir, "phage_taxonomy.csv"), index=False)
+    tax_df = pd.DataFrame(lineage_res)
+    
+    # Merge external metadata into the taxonomy export if available
+    if metadata_file and os.path.exists(metadata_file):
+        try:
+            m_df = pd.read_csv(metadata_file, dtype=str)
+            if "Genome" not in m_df.columns:
+                m_df.rename(columns={m_df.columns[0]: "Genome"}, inplace=True)
+                
+            # Rename overlapping columns e.g. Family, Genus to Ref_Family, Ref_Genus
+            rename_dict = {}
+            for col in m_df.columns:
+                if col != "Genome" and col in tax_df.columns:
+                    rename_dict[col] = f"Ref_{col}"
+            
+            # Only proceed with the merge if there are columns to compare
+            if rename_dict:
+                m_df.rename(columns=rename_dict, inplace=True)
+                
+                # Keep only the Genome column and the reference taxonomy columns
+                cols_to_keep = ["Genome"] + list(rename_dict.values())
+                m_df_subset = m_df[cols_to_keep]
+                
+                # Left merge to keep all VORTEX genomes, adding only the comparative taxonomy
+                tax_df = pd.merge(tax_df, m_df_subset, on="Genome", how="left")
+                tax_df = tax_df.fillna("Unknown")
+                if logger: logger.info("Merged comparative reference taxonomy into phage_taxonomy.csv")
+            
+        except Exception as e:
+            if logger: logger.warning(f"Could not merge metadata into taxonomy export: {e}")
+
+    tax_df.to_csv(os.path.join(output_dir, "phage_taxonomy.csv"), index=False)
     pd.DataFrame(sig_res).to_csv(os.path.join(output_dir, "phage_signatures.csv"), index=False)
     if logger: logger.info("Hierarchical analysis complete!")
 
@@ -634,26 +701,10 @@ def linkage_to_newick(linkage_matrix, labels):
         return f"({build_newick(node.left)},{build_newick(node.right)}):{node.dist:.6f}"
     return build_newick(tree) + ";"
 
-def generate_phylip_matrix(genomes, square_dist, output_phy, logger=None):
-    """Generates a square PHYLIP matrix. Note: PHYLIP requires the taxon count on line 1."""
-    if logger: logger.info(f"Generating PHYLIP matrix for {len(genomes)} taxa...")
-    try:
-        with open(output_phy, "w") as f:
-            # First line: Number of taxa
-            f.write(f" {len(genomes)}\n")
-            for i, taxon in enumerate(genomes):
-                # Clean name: Replace spaces/special chars with underscores
-                clean_name = re.sub(r'[^A-Za-z0-9_.]', '_', str(taxon))
-                # Distances formatted to 6 decimal places
-                dist_row = " ".join(f"{d:.6f}" for d in square_dist[i])
-                f.write(f"{clean_name} {dist_row}\n")
-    except Exception as e:
-        if logger: logger.error(f"Failed to write PHYLIP matrix: {e}")
-
 def run_visualization(genomes, genomes_by_clusters_sparse, square_dist, condensed_dist, base_out, fig_format, dpi, logger=None, no_vis=False):
     if not HAS_CORE_VIS or genomes is None: return
 
-    row_linkage = linkage(condensed_dist, method="complete")
+    row_linkage = linkage(condensed_dist, method="complete", optimal_ordering=True)
     with open(f"{base_out}_complete_dendrogram.newick", "w") as f: f.write(linkage_to_newick(row_linkage, genomes) + "\n")
 
     if not no_vis and genomes_by_clusters_sparse.shape[1] <= 50000:
@@ -679,7 +730,7 @@ def run_visualization(genomes, genomes_by_clusters_sparse, square_dist, condense
     else: shared_pct.to_csv(f"{base_out}_shared_pct.csv")
 
 
-def run_scalable_visualization(genomes, genomes_by_clusters_sparse, base_out, metadata_file=None, color_col="Family", logger=None):
+def run_scalable_visualization(genomes, genomes_by_clusters_sparse, base_out, metadata_file=None, colour_col="Family", logger=None):
 
     if not HAS_SCALABLE_VIS or genomes is None: return
 
@@ -688,7 +739,7 @@ def run_scalable_visualization(genomes, genomes_by_clusters_sparse, base_out, me
         try:
             meta_df = pd.read_csv(metadata_file, dtype=str)
             if "Genome" not in meta_df.columns: meta_df.rename(columns={meta_df.columns[0]: "Genome"}, inplace=True)
-            if logger: logger.info(f"Loaded metadata. Coloring plots by '{color_col}'...")
+            if logger: logger.info(f"Loaded metadata. Coloring plots by '{colour_col}'...")
         except Exception: meta_df = None
 
     try:
@@ -702,9 +753,9 @@ def run_scalable_visualization(genomes, genomes_by_clusters_sparse, base_out, me
 
         if meta_df is not None:
             df_svd = df_svd.merge(meta_df, on="Genome", how="left")
-            if color_col in df_svd.columns:
-                df_svd[color_col] = df_svd[color_col].fillna("Unknown")
-                color_kwarg = color_col
+            if colour_col in df_svd.columns:
+                df_svd[colour_col] = df_svd[colour_col].fillna("Unknown")
+                color_kwarg = colour_col
 
         fig_svd = px.scatter_3d(df_svd, x="PC1", y="PC2", z="PC3", hover_name="Genome", color=color_kwarg, title="Viral Lineage Projection (Sparse SVD)", template="plotly_white")
         fig_svd.update_traces(marker=dict(size=5, opacity=0.4))
@@ -741,7 +792,7 @@ def plot_upset_clusters(binary_prefix, output_plot, logger=None):
         mat = sp.load_npz(mat_path).tocsr()
         powers_of_two = (1 << np.arange(num_genomes)).astype(np.int64)
         
-        # Absolute peak optimization: A single dense dot product replaces 50,000 Python loops
+        # Use a dense dot product to replaces loops
         bitmasks = mat.dot(powers_of_two)
         global_bit_counts = np.bincount(bitmasks)
 
@@ -757,7 +808,7 @@ def plot_upset_clusters(binary_prefix, output_plot, logger=None):
 
         upset_series = from_memberships(memberships, data=counts)
         temp_df = pd.DataFrame({"count": upset_series.values, "degree": upset_series.index.to_frame().sum(axis=1)}, index=upset_series.index).sort_values(by=["degree", "count"], ascending=[False, False]).head(40)
-        # temp fix to disable pandas copy-on-write to fix upsetplot
+
         try:
             pd.options.mode.copy_on_write = False
         except Exception:
@@ -780,11 +831,13 @@ def main():
     parser.add_argument("-mem", "--duckdb_mem", type=str, required=True, default="16GB", help="Amount of RAM in GB allocated to database")
     parser.add_argument("-ids", "--min_seq_ids", type=str, default="0.7", help="comma-separated list of minimum sequence identities to assess, e.g. 0.3,0.5,0.7")
     parser.add_argument("-c", "--coverage", type=float, default=0.5, help="minimum coverage threshold to pass to MMSeqs2")
-    parser.add_argument("-min", "--min_shared_clusters", type=int, default=4, help="minimum number of core shared protein clusters to define network groups.")
+    parser.add_argument("-min", "--min_shared_clusters", type=int, default=2, help="minimum number of core shared protein clusters to define network groups.")
     parser.add_argument("-f", "--fig_format", type=str, default="png", choices=["png", "pdf", "svg"], help="format for static figures; binary presence/absence, Jaccard similarity heatmap and UpSet plot")
+    parser.add_argument("--force_jaccard", action="store_true", help="Force the generation of the dense Jaccard distance matrix and Nexus format dendrogram regardless of the number of input genomes")
     parser.add_argument("--dpi", type=int, default=300, help="dpi resolution for png output files")
     parser.add_argument("--metadata", type=str, default=None, help="csv metadata file to annotated UMAP and SVD outputs, must contain genome accessions")
-    parser.add_argument("--color_by", type=str, default="Family", help="column in metadata file used to colour genomes in UMAP and SVD outputs")
+    parser.add_argument("--colour_by", type=str, default="Family", help="column in metadata file used to colour genomes in UMAP and SVD outputs")
+    parser.add_argument("--network_cols", type=str, default="all", help="comma-separated list of metadata columns to map to the network export, or 'all' to map every column")
     parser.add_argument("--no-vis", action="store_true", help="skip all visualisation steps. Note that static figures are not generated when >1000 genomes are present in the input")
     parser.add_argument("--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Log level.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}", help="Show program's version number and exit")
@@ -792,7 +845,7 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # --- NEW: Setup Global Logs Directory ---
+    # Setup Global Logs Directory
     global_logs_dir = os.path.join(args.output_dir, "logs")
     os.makedirs(global_logs_dir, exist_ok=True)
     logger = setup_logger(os.path.join(global_logs_dir, "run.log"), getattr(logging, args.log_level.upper(), logging.INFO))
@@ -838,7 +891,7 @@ def main():
         }
 
         run_logger = setup_logger(os.path.join(logs_dir, "run.log"), getattr(logging, args.log_level.upper(), logging.INFO))
-        run_logger.info(f"--- Running MMseqs2 (min_seq_id={min_seq_id}) ---")
+        run_logger.info(f"Running MMseqs2 (min_seq_id={min_seq_id})")
 
         if shutil.which("mmseqs") is None: run_logger.error("mmseqs binary not found. Skipping."); continue
 
@@ -858,7 +911,7 @@ def main():
         summary_csv = os.path.join(results_dir, f"protein_cluster_summary_seqid_{seqid_str}.csv")
         desc_dict, cluster_records, all_genomes = build_summary_and_records(clusters_dir, summary_csv, output_fasta, run_logger)
 
-        count_prefix = os.path.join(results_dir, f"protein_cluster_matrix_seqid_{seqid_str}")
+        count_prefix = os.path.join(results_dir, f"protein_cluster_matrix_count_seqid_{seqid_str}")
         create_sparse_matrix(cluster_records, all_genomes, count_prefix, desc_dict, robustness_df, run_logger, binary=False)
 
         binary_prefix = os.path.join(results_dir, f"protein_cluster_matrix_binary_seqid_{seqid_str}")
@@ -870,29 +923,37 @@ def main():
         genomes, genomes_by_clusters_sparse, square_dist, condensed_dist = load_and_calculate_jaccard(binary_prefix, run_logger)
 
         if genomes is not None:
-            run_phage_hierarchy_analysis(binary_prefix, results_dir, min_shared_clusters=args.min_shared_clusters, metadata_file=args.metadata, logger=run_logger, square_dist=square_dist)
+            num_genomes = len(genomes) # Moved up to use for the CSV check
+
+            if num_genomes < 1000 or args.force_jaccard:
+                jaccard_sim_matrix = pd.DataFrame(1.0 - square_dist, index=genomes, columns=genomes)
+                global_linkage = linkage(condensed_dist, method="complete", optimal_ordering=True)
+                ordered_indices = leaves_list(global_linkage)
+                jaccard_sim_matrix = jaccard_sim_matrix.iloc[ordered_indices, ordered_indices]
+                jaccard_sim_matrix.to_csv(os.path.join(results_dir, f"protein_cluster_matrix_seqid_{seqid_str}.csv"))
+            else:
+                if run_logger:
+                    run_logger.info(f"Dataset contains {num_genomes} genomes (>=1000). Skipping dense Jaccard CSV generation. Use --force_jaccard to override.")
+            
+            run_phage_hierarchy_analysis(binary_prefix, results_dir, min_shared_clusters=args.min_shared_clusters, metadata_file=args.metadata, colour_col=args.colour_by, network_cols=args.network_cols, logger=run_logger, square_dist=square_dist)
 
             base_vis = os.path.join(results_dir, f"cluster_vis_seqid_{seqid_str}")
             if len(genomes) > 1000:
                 run_scalable_visualization(
                     genomes, genomes_by_clusters_sparse, base_vis, 
                     metadata_file=os.path.join(results_dir, "phage_taxonomy.csv"), 
-                    color_col="Family", 
+                    colour_col="Family", 
                     logger=run_logger
                 )
-            num_genomes = len(genomes)
-            if num_genomes <= 500:
+            if num_genomes <= 1000 or args.force_jaccard:
                 nexus_out = os.path.join(results_dir, f"jaccard_distances_seqid_{seqid_str}.nex")
                 generate_jaccard_nexus(genomes, square_dist, nexus_out, run_logger)
-            elif num_genomes <= 1000:
-                phy_out = os.path.join(results_dir, f"jaccard_distances_seqid_{seqid_str}.phy")
-                generate_phylip_matrix(genomes, square_dist, phy_out, run_logger)
             else:
                 if run_logger: 
-                    run_logger.info(f"Dataset contains {num_genomes} genomes (>1000). Skipping dense PHYLIP matrix generation.")
+                    run_logger.info(f"Dataset contains {num_genomes} genomes (>1000). Skipping dense NEXUS matrix generation.")
                 
             if len(genomes) <= 1000: run_visualization(genomes, genomes_by_clusters_sparse, square_dist, condensed_dist, base_vis, args.fig_format, args.dpi, run_logger, args.no_vis)
-            else: run_scalable_visualization(genomes, genomes_by_clusters_sparse, base_vis, args.metadata, args.color_by, run_logger)
+            else: run_scalable_visualization(genomes, genomes_by_clusters_sparse, base_vis, args.metadata, args.colour_by, run_logger)
 
         if not args.no_vis: 
             plot_upset_clusters(binary_prefix, os.path.join(results_dir, f"cluster_upset_plot_seqid_{seqid_str}.{args.fig_format}"), run_logger)
