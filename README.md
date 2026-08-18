@@ -9,7 +9,7 @@ VORTEX is designed to cluster bacteriophage proteins and enable the examination 
 
 To assign genomes into groups, a large connected component network is created which is then broken down using a minimum Jaccard threshold of 0.05. Heirarchical clustering (complete linkage) of the network is then used to classify the genomes into three levels (loosely corresponding to the taxonomic ranks of family, subfamily and genus). At each level, the number and identity of core protein clusters is determined. 
 
-VORTEX is agnostic to the formal ICTV taxonomy, and does not use the established taxonomy to train assignments. This is deliberate, since ranks up to and including family should demonstrate the presence of core genes that are detectable by standard methods of determining sequence similarity. Therefore, this approach enables an independent assessment of the current taxonomy. 
+VORTEX is agnostic to the formal ICTV taxonomy, and does not use the established taxonomy to train assignments. This is deliberate, since ranks up to and including family should demonstrate the presence of core genes that are detectable by standard methods of determining sequence similarity. 
 
 ## Installation
 VORTEX can be installed using miniforge. Clone the github repository and use the yaml file to create an environment with the required packages and dependancies
@@ -22,7 +22,7 @@ conda activate vortex
 
 ### Preparing Input files
 #### GenBank files
-To provide a standardised input dataset it is recommended that all genomes should be annotated using the same tool with identical parameters (unless you have phages which are known to use alternative translation tables). VORTEX will extract all protein coding regions where each protein has a header of LOCUS_CDS-number and the information contained in the \product qualifier.
+To provide a standardised input dataset it is recommended that all genomes should be annotated using the same tool with identical parameters (unless you have phages which are known to use alternative translation tables). VORTEX will extract all protein coding regions assigning each protein a fasta header in the format LOCUS_CDS-number, with the information contained in the /product and /protein_id qualifier. Where no product or protein_id is provided, these values default to "Unknown".
 
 #### Protein fasta files
 Alternatively, the vConTACT2_proteins.faa file from the excellent [INPHARED](https://github.com/RyanCook94/inphared) can be used as input, with proteins from new genomes appended using `cat`. The header for protein fasta records should follow the format LOCUS_CDS-number and the information contained in the \product qualifier, e.g.
@@ -33,7 +33,7 @@ Alternatively, the vConTACT2_proteins.faa file from the excellent [INPHARED](htt
 ### Running VORTEX
 
 ```
-python VORTEX.py --input_fasta inphared_proteins/14Apr2025_vConTACT2_proteins.faa --output_dir inphared_03seqid --min_seq_ids 0.3 --coverage 0.8 --min_shared_clusters 4 --metadata inphared_proteins/inphared_test_metadata.csv --color_by Family --duckdb_mem 32GB --threads 12 --fig_format png --dpi 600
+python VORTEX.py --input_fasta inphared_proteins/10Aug2026_vConTACT2_proteins.faa --output_dir inphared_03seqid --min_seq_ids 0.3 --coverage 0.8 --min_shared_clusters 4 --metadata inphared_proteins/inphared_test_metadata.csv --colour_by Family --network-cols all --duckdb_mem 32GB --threads 12 --fig_format png --dpi 600
 ```
 
 ## Command-Line Parameters
@@ -57,14 +57,17 @@ A separate subdirectory for each sequence identity threshold is created in the o
 
 The `-min, --min_shared_clusters` flag specified the minimum number of shared protein clusters required to consider two phages to be linked at the highest rank assignment. The default value is `4`.
 
-The `-m, --metadata` and `--color_by` flags allow metadata to be mapped to the network. The metadata file should be a csv file with a header row where the first column is labelled `Genome` and contains a list of accessions (omitting the version number). 
+The `-m, --metadata` and `--colour_by` flags allow metadata to be mapped to the data. The metadata file should be a csv file with a header row where the first column is labelled `Genome` and contains a list of accessions (omitting the version number). `--colour_by` colours the SVD and UMAP visualisations. 
+
+The network file can be annotated using the `--network_cols` argument where a comma-separated list of columns in the metadata file to use can be provided. Alternatively, the default is 'all' which will map every column.
 
 Figures can be saved in either `.png`, `.pdf` or `.svg` format, e.g.
 ```
 --fig_format svg
 ```
-The `--dpi` flag allows the user the specify the quality if `.png` outputs are chosen. Alternatively visualisations can be skipped entirely using `--no_vis`.
+The `--dpi` flag allows the user the specify the quality if `.png` outputs are chosen. Alternatively visualisations can be skipped entirely using `--no_vis`. Visualisations are automatically supressed when there are >1000 genomes in the input data.
 
+The `--force_nexus` flag can be used to bypass the automatic suppression of the Nexus distance matrix when analysing >1000 genomes. Note that generating this file for very large datasets may take longer and result in extremely large files.
 
 ### Output files
 The outputs provided by VORTEX differ based on the number of genomes present within the input files. This has been implemented to avoid excessive calculation times and generation of large (and unreadable) figures.
@@ -76,11 +79,11 @@ Binary presence-absence heatmap where genomes are rows and columns represent pro
 `cluster_vis_seqid_shared_pct.{png/tiff/svg}`  
 Heirarchically clusterd heatmap of jaccard similarity based on the percentage of shared protein clusters between genomes.
 
-`jaccard_distances_seqid.phy`  
-A tree of the heirarchically clustered jaccard distances in phylip format. 
+`jaccard_distances_seqid.nex`  
+A tree of the heirarchically clustered jaccard distances in nexus format. 
 
 `phage_global_network_edges.csv`  
-Export of the network for import into tools such as [Cytoscape](http://cytoscape.org/) or [Gephi](https://gephi.org/). Genomes are nodes and two edge weights are provided for each pair of genomes, the jaccard distance and the number of shared protein clusters. If a metadata file and the `color_by` flag have been specified, this information is provided as two additional columns for source and target nodes.
+Export of the network for import into tools such as [Cytoscape](http://cytoscape.org/) or [Gephi](https://gephi.org/). Genomes are nodes and two edge weights are provided for each pair of genomes; the jaccard distance and the number of shared protein clusters. If a metadata file and the `network_cols` flag have been specified, this information is provided as additional columns for source and target nodes.
 
 `phage_taxonomy.csv`  
 A CSV files that maps each genome to three ranks alongside the number of core proteins determined at each rank.
@@ -107,7 +110,7 @@ Additional metrics include the number of unique sequences, maximum number of par
 An all-vs-all matrix of the Jaccard similarity based on the percentage of shared protein clusters between genomes. 
 
 ### Cases where the number of genomes is >1000
-Where the number of input genomes exceeds 1000, VORTEX automatically skips the generation of visualisation files and the phylip-format dendrogram. All other outputs are generated.
+Where the number of input genomes exceeds 1000, VORTEX automatically skips the generation of visualisation files and the nexus-format dendrogram. All other outputs are generated.
 
 ## Utility Scripts
 Where large-scale analysis of >1000 genomes are performed, it can be useful to be able to downsample these results to return information on a specific group of phages.
@@ -118,14 +121,14 @@ The shared protein clusters script takes a list of accession numbers and returns
 
 Command line arguments:
 ```
---matrix_prefix", required=True, help="Prefix of the binary matrix files (e.g., results/protein_cluster_matrix_binary_seqid_0_7)
+--matrix_prefix Prefix of the binary matrix files (e.g., results/protein_cluster_matrix_binary_seqid_0_7)
 --summary_csv - Path to the protein cluster summary CSV (e.g., results/protein_cluster_summary_seqid_0_7.csv)
 --accessions - Text file containing genome accessions to query (one per line, no header)
 --out_dir - Path to save the results
 ```
 
 ### subset_cluster_results.py
-The results of a large-scale analysis can be downsampled using a list of accession numbers. This script will re-generate the output files to only include the genomes provided. Note however that the metrics provided in the binary matrix output will not be changed.
+The results of a large-scale analysis can be downsampled using a list of accession numbers. This script will re-generate the output files to only include the genomes provided. Note however that the metrics provided in the binary and count matrix outputs will not be changed.
 
 Command line arguments:
 ```
