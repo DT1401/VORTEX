@@ -33,7 +33,7 @@ Alternatively, the vConTACT2_proteins.faa file from the excellent [INPHARED](htt
 ### Running VORTEX
 
 ```
-python VORTEX.py --input_fasta inphared_proteins/10Aug2026_vConTACT2_proteins.faa --output_dir inphared_03seqid --min_seq_ids 0.3 --coverage 0.8 --min_shared_clusters 4 --metadata inphared_proteins/inphared_test_metadata.csv --colour_by Family --network-cols all --duckdb_mem 32GB --threads 12 --fig_format png --dpi 600
+VORTEX.py --input_fasta inphared_proteins/10Aug2026_vConTACT2_proteins.faa --output_dir inphared_03seqid --min_seq_ids 0.3 --coverage 0.8 --min_shared_clusters 4 --metadata inphared_proteins/inphared_test_metadata.csv --colour_by Family --network-cols Order,Family,Subfamily,Genus --duckdb_mem 32GB --threads 12 --fig_format png --dpi 600
 ```
 
 ## Command-Line Parameters
@@ -48,12 +48,13 @@ VORTEX is written to handle jobs in parallel, with data from MMSeqs convertalis 
 ```
 --duckdb_mem 16GB
 ```
+This database also stores the coverage-weighted bit score for the alignments of each protein cluster. This metric is designed to feed forward to VORTEX-SC.
 
 Multiple minimum sequence identity thresholds `-ids, --min_seq_ids` can be used by providing a comma-separated list, e.g.
 ```
 --min_seq_ids 0.3,0.5,0.7
 ```
-A separate subdirectory for each sequence identity threshold is created in the output folder. Each minimum sequence identity threshold will be run using the minimum coverage threshold specified using the `-c, --coverage` flag
+A separate subdirectory for each sequence identity threshold is created in the output folder. Each minimum sequence identity threshold will be run using the minimum coverage threshold specified using the `-c, --coverage` flag. For most use-case scenarios we have used the same thresholds as the PHROGS database, 30% sequence identity (`--min_seq_ids 0.3`) and 80 % coverage (`-c 0.8`)
 
 The `-min, --min_shared_clusters` flag specified the minimum number of shared protein clusters required to consider two phages to be linked at the highest rank assignment. The default value is `4`.
 
@@ -121,7 +122,7 @@ The shared protein clusters script takes a list of accession numbers and returns
 
 Command line arguments:
 ```
---matrix_prefix Prefix of the binary matrix files (e.g., results/protein_cluster_matrix_binary_seqid_0_7)
+--matrix_prefix - Prefix of the binary matrix files (e.g., results/protein_cluster_matrix_binary_seqid_0_7)
 --summary_csv - Path to the protein cluster summary CSV (e.g., results/protein_cluster_summary_seqid_0_7.csv)
 --accessions - Text file containing genome accessions to query (one per line, no header)
 --out_dir - Path to save the results
