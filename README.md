@@ -25,7 +25,7 @@ conda activate vortex
 To provide a standardised input dataset it is recommended that all genomes should be annotated using the same tool with identical parameters (unless you have phages which are known to use alternative translation tables). VORTEX will extract all protein coding regions assigning each protein a fasta header in the format LOCUS_CDS-number, with the information contained in the /product and /protein_id qualifier. Where no product or protein_id is provided, these values default to "Unknown".
 
 #### Protein fasta files
-Alternatively, the vConTACT2_proteins.faa file from the excellent [INPHARED](https://github.com/RyanCook94/inphared) can be used as input, with proteins from new genomes appended using `cat`. The header for protein fasta records should follow the format LOCUS_CDS-number and the information contained in the \product qualifier, e.g.
+Alternatively, the vConTACT2_proteins.faa file from the excellent [INPHARED](https://github.com/RyanCook94/inphared) can be used as input, with proteins from new genomes appended using `cat`. The header for protein fasta records should follow the format LOCUS_CDS-number and the information contained in the /product qualifier, e.g.
 ```
 >LC190123_001 Large terminase subunit
 ```
@@ -33,7 +33,7 @@ Alternatively, the vConTACT2_proteins.faa file from the excellent [INPHARED](htt
 ### Running VORTEX
 
 ```
-VORTEX.py --input_fasta inphared_proteins/10Aug2026_vConTACT2_proteins.faa --output_dir inphared_03seqid --min_seq_ids 0.3 --coverage 0.8 --min_shared_clusters 4 --metadata inphared_proteins/inphared_test_metadata.csv --colour_by Family --network-cols Order,Family,Subfamily,Genus --duckdb_mem 32GB --threads 12 --fig_format png --dpi 600
+VORTEX.py --input_fasta inphared_proteins/10Aug2026_vConTACT2_proteins.faa --output_dir inphared_03seqid --min_seq_ids 0.3 --coverage 0.8 --min_shared_clusters 4 --metadata utilities/vmr_metadata.csv --colour_by Family --network-cols Order,Family,Subfamily,Genus --duckdb_mem 32GB --threads 12 --fig_format png --dpi 600
 ```
 
 ## Command-Line Parameters
