@@ -68,7 +68,7 @@ Figures can be saved in either `.png`, `.pdf` or `.svg` format, e.g.
 ```
 The `--dpi` flag allows the user the specify the quality if `.png` outputs are chosen. Alternatively visualisations can be skipped entirely using `--no_vis`. Visualisations are automatically supressed when there are >1000 genomes in the input data.
 
-The `--force_nexus` flag can be used to bypass the automatic suppression of the Nexus distance matrix when analysing >1000 genomes. Note that generating this file for very large datasets may take longer and result in extremely large files.
+The `--force_jaccard` flag can be used to bypass the automatic suppression of the dense Jaccard distance CSV matrix and Nexus dendrogram when analysing >1000 genomes. Note that generating this file for very large datasets may take longer and result in extremely large files.
 
 ### Output files
 The outputs provided by VORTEX differ based on the number of genomes present within the input files. This has been implemented to avoid excessive calculation times and generation of large (and unreadable) figures.
@@ -87,7 +87,7 @@ A tree of the heirarchically clustered jaccard distances in nexus format.
 Export of the network for import into tools such as [Cytoscape](http://cytoscape.org/) or [Gephi](https://gephi.org/). Genomes are nodes and two edge weights are provided for each pair of genomes; the jaccard distance and the number of shared protein clusters. If a metadata file and the `network_cols` flag have been specified, this information is provided as additional columns for source and target nodes.
 
 `phage_taxonomy.csv`  
-A CSV files that maps each genome to three ranks alongside the number of core proteins determined at each rank.
+A CSV files that maps each genome to three ranks alongside the number of core proteins determined at each rank. Note that the number of core protein clusters at the family level will differ from the output of `core_protein_clusters_seqid` since here a more permissive threshold is used to account for the presence of fragmented assemblies, slightly incomplete genomes and missing genes in the annotations.
 
 `phage_signatures.csv`  
 A CSV file that details each of the core protein clusters identified in the `phage_taxonomy.csv` output. The product descriptions for protein clusters are also provided. Where these differ, counts are provided for each unique product description, e.g.
