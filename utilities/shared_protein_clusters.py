@@ -7,7 +7,7 @@ import pandas as pd
 import scipy.sparse as sp
 
 def load_targets(accessions_file):
-    with open(accessions_file, 'r') as f:
+    with open(accessions_file, 'r', encoding='utf-8-sig') as f:
         return set(line.strip() for line in f if line.strip())
 
 def main():
@@ -28,7 +28,7 @@ def main():
     cols_path = f"{args.matrix_prefix}_cols.txt"
     rows_path = f"{args.matrix_prefix}_rows.csv"
 
-    with open(cols_path, "r") as f:
+    with open(cols_path, "r", encoding='utf-8-sig') as f:
         all_genomes = np.array([line.strip() for line in f if line.strip()])
     
     rows_df = pd.read_csv(rows_path)
@@ -42,6 +42,10 @@ def main():
         return
 
     print(f"Found {len(target_indices)} out of {len(target_accessions)} requested target genomes.")
+
+    # DEBUG: Find the exact strings that are in your file but NOT in the matrix
+    missing_genomes = target_accessions - set(all_genomes)
+    print(f"\nDEBUG: The following genomes failed the exact match:\n{missing_genomes}\n")
 
     # 2. Identify protein clusters where a protein is present in the target genomes
     # Slice matrix to target genomes, sum rows to find which clusters they possess

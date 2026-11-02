@@ -119,17 +119,26 @@ def extract_proteins(genbank_file, out_handle, protein_counter, logger=None):
     try:
         base_name = os.path.splitext(os.path.basename(genbank_file))[0]
         safe_genome_id = re.sub(r'[^A-Za-z0-9_.]', '_', base_name)
-        
         with open(genbank_file, "r") as gb_handle:
             for record in SeqIO.parse(gb_handle, "genbank"):
+                # 1. Define the genome ID using the RECORD ID, not the filename
+                # (Strip problematic characters just in case)
+                safe_genome_id = str(record.id).replace(".", "_").replace(" ", "_")
+                
+                # 2. Reset the counter to 1 for every new record
+                protein_counter = 1 
+                
                 for feature in record.features:
                     if feature.type == "CDS" and "translation" in feature.qualifiers:
                         protein_sequence = feature.qualifiers["translation"][0]
                         product = feature.qualifiers.get("product", ["Unknown"])[0]
                         protein_acc = feature.qualifiers.get("protein_id", ["Unknown"])[0]
+                        
                         protein_id = f"{safe_genome_id}_{protein_counter}"
                         out_handle.write(f">{protein_id} {product} {protein_acc}\n{protein_sequence}\n")
+                        
                         protein_counter += 1
+
     except Exception as e:
         if logger: logger.error(f"Error extracting proteins from {genbank_file}: {e}")
         raise
@@ -862,8 +871,9 @@ def main():
         if not gb_files: logger.error("No GenBank files found."); sys.exit(1)
         with open(output_fasta, "w") as out_handle:
             for f in tqdm(gb_files, disable=TQDM_DISABLE):
-                protein_counter = 1 # Reset the counter for each new genome
-                extract_proteins(os.path.join(args.input_dir, f), out_handle, protein_counter, logger)
+                # We no longer set protein_counter = 1 here. 
+                # extract_proteins handles it internally per-record.
+                extract_proteins(os.path.join(args.input_dir, f), out_handle, logger)
 
     for min_seq_id in [float(x.strip()) for x in args.min_seq_ids.split(",") if x.strip()]:
         seqid_str = str(min_seq_id).replace(".", "_")

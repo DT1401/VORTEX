@@ -22,7 +22,7 @@ conda activate vortex
 
 ### Preparing Input files
 #### GenBank files
-To provide a standardised input dataset it is recommended that all genomes should be annotated using the same tool with identical parameters (unless you have phages which are known to use alternative translation tables). VORTEX will extract all protein coding regions assigning each protein a fasta header in the format LOCUS_CDS-number, with the information contained in the /product and /protein_id qualifier. Where no product or protein_id is provided, these values default to "Unknown".
+To provide a standardised input dataset it is recommended that all genomes should be annotated using the same tool with identical parameters (unless you have phages which are known to use alternative translation tables). VORTEX will extract all protein coding regions assigning each protein a fasta header in the format LOCUS_CDS-number, with the information contained in the /product and /protein_id qualifier. Where no product or protein_id is provided, these values default to "Unknown". VORTEX can handle .gbk files that contain multiple records
 
 #### Protein fasta files
 Alternatively, the vConTACT2_proteins.faa file from the excellent [INPHARED](https://github.com/RyanCook94/inphared) can be used as input, with proteins from new genomes appended using `cat`. The header for protein fasta records should follow the format LOCUS_CDS-number and the information contained in the /product qualifier, e.g.
@@ -114,8 +114,7 @@ An all-vs-all matrix of the Jaccard similarity based on the percentage of shared
 Where the number of input genomes exceeds 1000, VORTEX automatically skips the generation of visualisation files and the nexus-format dendrogram. All other outputs are generated.
 
 ## Utility Scripts
-Where large-scale analysis of >1000 genomes are performed, it can be useful to be able to downsample these results to return information on a specific group of phages.
-Rather than re-running VORTEX, two utility scripts are provided to achieve this. 
+Where large-scale analysis of >1000 genomes are performed, it can be useful to be able to downsample these results to return information on a specific group of phages. Instead of re-running VORTEX, two utility scripts, shared_protein_clusters.py and subset_cluster_results.py, are provided to achieve this. 
 
 ### shared_protein_clusters.py
 The shared protein clusters script takes a list of accession numbers and returns just the protein clusters associated with the specified genomes. This enables the identification of all phages which share one or more protein clusters with the target genomes specified.
@@ -158,14 +157,31 @@ This script can be used to expand the sparse-matrix format, creating a single cs
 
 Command line arguments
 ```
--d, --dir - path to the results directory containing the protein_cluster_matrix_binary_ and protein_cluster_matrix_counts
+-d, --dir # path to the results directory containing the protein_cluster_matrix_binary_ and protein_cluster_matrix_counts
+```
+
+### inter_intra_taxon_similarities.py
+This script uses the output from VORTEX and a metadata file to calculate and plot intra/inter-group protein cluster similarities at different taxonomic ranks (Family/Genus/Subfamily)
+
+Command line arguments
+```
+-i, --input # path to input CSV file containing the binary protein cluster matrix output from VORTEX
+-m, --metadata # Path to metadata CSV file. Looks for 'genome', 'family', 'genus', 'subfamily' columns
+-p, --prefix" # prefix for output SVG files (default: Taxon_cluster_analysis_)
+-o, --output # Optional path to save the resulting percentage similarity matrix
+--save-intermediate # If set, save intermediate comparison CSVs
+```
+
+### map_network_metadata.py
+Map new metadata to an existing VORTEX network and optionally filter by the network by edge weight (distance_
+```
+-n, --network # Path to the existing phage_global_network_edges.csv
+-m, --metadata # Path to the new metadata CSV
+-o, --output # Path to save the updated network edges CSV
+-g, --genome_col # Column name in the metadata file containing genome accessions
+-c, --clean # Remove existing metadata from the network before mapping
+-w, --min_weight #  Minimum jaccard threshold to retain an edge, e.g. -w 0.05: remove all edges <= 0.05
 ```
 
 ## To-do
-> - Simply input flags, allow mixed input types e.g. fasta + GenBank?
-> - ~~Map all annotation columns to network output, not just the one specified~~
-> - ~~Add utility script to scrape VMR and generate a metadata file~~
-> - Add utility script to calculate and plot intra- and inter-taxon metrics
-> - ~~Add utility script to convert sparse matrix into standard csv~~
-> - Change output names to avoid 'taxonomy'
 > - Singleton nodes are dropped from the network output as they have no connected edges - resolve behaviour
