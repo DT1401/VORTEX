@@ -47,6 +47,7 @@ try:
     import scipy.sparse as sp
     from scipy.sparse import csgraph
     from sklearn.decomposition import TruncatedSVD
+    from sklearn.metrics import silhouette_score
     import plotly.express as px
     HAS_SCALABLE_VIS = True
 except Exception:
@@ -296,7 +297,14 @@ def build_summary_and_records(fasta_dir, output_csv, output_fasta, logger=None):
     prot_to_desc = {}
     for record in SeqIO.parse(output_fasta, "fasta"):
         if record.id not in prot_to_desc:
-            prot_to_desc[record.id] = record.description.split(record.id, maxsplit=1)[1].strip() if record.id in record.description else record.description
+            # 1. Strip the leading protein_id
+            raw_desc = record.description.split(record.id, maxsplit=1)[1].strip() if record.id in record.description else record.description
+            
+            # 2. FIX: Drop the trailing protein_acc or "Unknown" to allow perfect aggregation
+            # By splitting from the right (rsplit) once, we remove the final word and keep the product name intact.
+            clean_desc = raw_desc.rsplit(" ", 1)[0] if " " in raw_desc else raw_desc
+            
+            prot_to_desc[record.id] = clean_desc
 
     all_genomes, cluster_records, desc_dict, summary_csv_rows = set(), [], {}, []
 
@@ -479,6 +487,7 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
         inter = sub_A.dot(sub_A.T).toarray()
         
         edges_for_export = []
+        connected_nodes = set()
         
         for i in range(len(indices)):
             for j in range(i + 1, len(indices)):
@@ -492,6 +501,7 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
                         G.addEdge(i, j, sim)
                         
                         if save_edgelist_path:
+                            connected_nodes.update([i, j]) 
                             # These two lines define the variables and must come first
                             source_genome = genomes[indices[i]]
                             target_genome = genomes[indices[j]]
@@ -512,8 +522,23 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
                             edges_for_export.append(edge_data)
         
         if save_edgelist_path and edges_for_export:
-            pd.DataFrame(edges_for_export).to_csv(save_edgelist_path, index=False)
-            if logger: logger.info(f"Exported {len(edges_for_export)} network edges to {save_edgelist_path}")
+            for i in range(len(indices)):
+                if i not in connected_nodes:
+                    source_genome = genomes[indices[i]]
+                    edge_data = {
+                        "Source": source_genome,
+                        "Target": "",  # Blank target creates a singleton in Cytoscape
+                        "Weight": 0.0,
+                        "Shared_Clusters": int(r_sums[i]) # Stores total proteins for the singleton
+                    }
+                    for col in target_cols:
+                        edge_data[f"Source_{col}"] = meta_dict.get(source_genome, {}).get(col, "Unknown")
+                        edge_data[f"Target_{col}"] = ""
+                    edges_for_export.append(edge_data)
+
+            if edges_for_export:
+                pd.DataFrame(edges_for_export).to_csv(save_edgelist_path, index=False)
+                if logger: logger.info(f"Exported {len(edges_for_export)} network elements (including singletons) to {save_edgelist_path}")
             
         return G
 
@@ -555,7 +580,7 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
         return comm_map
 
     lineage_res, sig_res = [], []
-    if logger: logger.info("Building Strict Phage Taxonomy via Hybrid Network/Complete Linkage...")
+    if logger: logger.info("Building Virus Taxonomy via Hybrid Network/Complete Linkage...")
 
     # Broad Network Sweep (Find disconnected "Islands")
     root_indices = list(range(num_genomes))
@@ -837,9 +862,9 @@ def main():
     parser.add_argument("-if", "--input_fasta", type=str, help="path to a multi-fasta file")
     parser.add_argument("-o", "--output_dir", type=str, required=True, help="path to store the results")
     parser.add_argument("-t", "--threads", type=int, default=16, help="Number of threads.")
-    parser.add_argument("-mem", "--duckdb_mem", type=str, required=True, default="16GB", help="Amount of RAM in GB allocated to database")
+    parser.add_argument("-mem", "--duckdb_mem", type=str, required=True, default="16GB", help="Amount of RAM in GB allocated to database, e.g. 16GB")
     parser.add_argument("-ids", "--min_seq_ids", type=str, default="0.7", help="comma-separated list of minimum sequence identities to assess, e.g. 0.3,0.5,0.7")
-    parser.add_argument("-c", "--coverage", type=float, default=0.5, help="minimum coverage threshold to pass to MMSeqs2")
+    parser.add_argument("-c", "--coverage", type=float, default=0.5, help="minimum coverage threshold to pass to MMSeqs2, e.g. 0.8 = 80% coverage")
     parser.add_argument("-min", "--min_shared_clusters", type=int, default=2, help="minimum number of core shared protein clusters to define network groups.")
     parser.add_argument("-f", "--fig_format", type=str, default="png", choices=["png", "pdf", "svg"], help="format for static figures; binary presence/absence, Jaccard similarity heatmap and UpSet plot")
     parser.add_argument("--force_jaccard", action="store_true", help="Force the generation of the dense Jaccard distance matrix and Nexus format dendrogram regardless of the number of input genomes")
