@@ -864,7 +864,7 @@ def main():
     parser.add_argument("-t", "--threads", type=int, default=16, help="Number of threads.")
     parser.add_argument("-mem", "--duckdb_mem", type=str, required=True, default="16GB", help="Amount of RAM in GB allocated to database, e.g. 16GB")
     parser.add_argument("-ids", "--min_seq_ids", type=str, default="0.7", help="comma-separated list of minimum sequence identities to assess, e.g. 0.3,0.5,0.7")
-    parser.add_argument("-c", "--coverage", type=float, default=0.5, help="minimum coverage threshold to pass to MMSeqs2, e.g. 0.8 = 80% coverage")
+    parser.add_argument("-c", "--coverage", type=float, default=0.5, help="minimum coverage threshold to pass to MMSeqs2, e.g. 0.8 = 80%% coverage")
     parser.add_argument("-min", "--min_shared_clusters", type=int, default=2, help="minimum number of core shared protein clusters to define network groups.")
     parser.add_argument("-f", "--fig_format", type=str, default="png", choices=["png", "pdf", "svg"], help="format for static figures; binary presence/absence, Jaccard similarity heatmap and UpSet plot")
     parser.add_argument("--force_jaccard", action="store_true", help="Force the generation of the dense Jaccard distance matrix and Nexus format dendrogram regardless of the number of input genomes")
