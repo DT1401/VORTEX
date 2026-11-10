@@ -21,7 +21,7 @@ import hashlib
 import warnings
 
 # Version information
-__version__ = "0.9.3b"
+__version__ = "0.9.4b"
 
 TQDM_DISABLE = not sys.stdout.isatty()
 
