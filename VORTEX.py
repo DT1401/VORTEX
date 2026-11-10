@@ -98,8 +98,8 @@ def setup_logger(log_file=None, console_level=logging.INFO):
 def filter_duplicate_fasta(input_file, output_file, logger=None):
     """
     Reads a FASTA file and writes it to an output file, skipping any 
-    duplicate IDs to ensure downstream dictionary operations and MMseqs2 
-    do not silently drop or merge sequences unpredictably.
+    duplicate IDs to ensure downstream dictionary operations and MMseqs2 analysis 
+    do not silently drop or merge sequences.
     """
     seen_ids = set()
     skipped_count = 0
@@ -148,7 +148,7 @@ def extract_proteins(genbank_file, out_handle, protein_counter, logger=None):
 
 def run_mmseqs(input_file, cluster_tsv_file, log, threads, config, db_path, cluster_db_path, tmp_dir, logger=None):
     if shutil.which("mmseqs") is None:
-        raise FileNotFoundError("mmseqs binary not found. Please install MMseqs2 and ensure it's on PATH.")
+        raise FileNotFoundError("MMseqs2 binary not found. Please install MMseqs2 and ensure it is in PATH.")
 
     params = {
         "db": "proteome", "db_path": db_path, "cluster_db": "clusters", "cluster_db_path": cluster_db_path,
@@ -264,7 +264,6 @@ def process_mmseqs_parquet_partitioned(
                     ORDER BY genome
                 ) TO '{parquet_dir}' (FORMAT PARQUET, PARTITION_BY genome);
             """)
-            # ------------------------
             
         except subprocess.CalledProcessError as e:
             if logger: logger.error(f"MMseqs convertalis failed: {e.stderr.decode('utf-8') if e.stderr else 'Unknown'}")
@@ -297,13 +296,18 @@ def build_summary_and_records(fasta_dir, output_csv, output_fasta, logger=None):
     prot_to_desc = {}
     for record in SeqIO.parse(output_fasta, "fasta"):
         if record.id not in prot_to_desc:
-            # 1. Strip the leading protein_id
+            # Strip the leading protein_id
             raw_desc = record.description.split(record.id, maxsplit=1)[1].strip() if record.id in record.description else record.description
             
-            # 2. FIX: Drop the trailing protein_acc or "Unknown" to allow perfect aggregation
-            # By splitting from the right (rsplit) once, we remove the final word and keep the product name intact.
-            clean_desc = raw_desc.rsplit(" ", 1)[0] if " " in raw_desc else raw_desc
+            clean_desc = raw_desc
+            if " " in raw_desc:
+                base_desc, last_word = raw_desc.rsplit(" ", 1)
+        
+                # Drop the last word if it is unknown or 
+                if last_word.lower() == "unknown" or any(c.isdigit() for c in last_word) or "_" in last_word:
+                    clean_desc = base_desc
             
+            # Save it back to the dictionary
             prot_to_desc[record.id] = clean_desc
 
     all_genomes, cluster_records, desc_dict, summary_csv_rows = set(), [], {}, []
@@ -395,47 +399,62 @@ def extract_core_clusters(binary_prefix, core_output_csv, logger=None):
     if logger: logger.info(f"Found {len(core_df)} core clusters. Saved to {core_output_csv}")
 
 
-def extent_hash(extent_array):
-    # Stable hash of sorted genome index array
-    return hashlib.blake2b(extent_array.tobytes(), digest_size=16).hexdigest()
+# Legacy - could use to make rank assignments static between runs
+#def extent_hash(extent_array):
+#    # Stable hash of sorted genome index array
+#    return hashlib.blake2b(extent_array.tobytes(), digest_size=16).hexdigest()
 
-def load_and_calculate_jaccard(binary_prefix, logger=None):
+def load_and_calculate_distances(binary_prefix, logger=None):
     mat_path, cols_path = f"{binary_prefix}_matrix.npz", f"{binary_prefix}_cols.txt"
-    if not HAS_SCALABLE_VIS or not os.path.exists(mat_path): return None, None, None, None
-
-    if logger: logger.info("Loading sparse matrix and calculating exact Jaccard distances...")
-
+    if not HAS_SCALABLE_VIS or not os.path.exists(mat_path): return None, None, None, None, None
+    
+    if logger: logger.info("Loading sparse matrix and calculating exact Jaccard and Sørensen-Dice distances...")
     with open(cols_path, "r") as f: genomes = [line.strip() for line in f if line.strip()]
     num_genomes = len(genomes)
-
+    
     # Load and transpose to (Genomes x Clusters) for the dot product
     A = sp.load_npz(mat_path).transpose().tocsr().astype(np.float32)
     row_sums = A.sum(axis=1).A1 
-
-    square_dist = np.zeros((num_genomes, num_genomes), dtype=np.float32)
+    
+    square_dist_jaccard = np.zeros((num_genomes, num_genomes), dtype=np.float32)
+    square_dist_dice = np.zeros((num_genomes, num_genomes), dtype=np.float32)
     chunk_size = 2000
     
-    for i in tqdm(range(0, num_genomes, chunk_size), desc="Calculating Jaccard batches", disable=TQDM_DISABLE):
+    for i in tqdm(range(0, num_genomes, chunk_size), desc="Calculating distance batches", disable=TQDM_DISABLE):
         end = min(i + chunk_size, num_genomes)
         int_chunk = A[i:end].dot(A.T).toarray()
+        
+        # Jaccard denominator: |A| + |B| - |A n B|
         union_chunk = row_sums[i:end, None] + row_sums - int_chunk
+        
+        # Dice denominator: |A| + |B|
+        sum_chunk = row_sums[i:end, None] + row_sums
         
         with np.errstate(divide='ignore', invalid='ignore'):
             jaccard_chunk = int_chunk / union_chunk
             jaccard_chunk[np.isnan(jaccard_chunk)] = 0.0
-        square_dist[i:end, :] = 1.0 - jaccard_chunk
+            
+            dice_chunk = (2.0 * int_chunk) / sum_chunk
+            dice_chunk[np.isnan(dice_chunk)] = 0.0
+            
+        square_dist_jaccard[i:end, :] = 1.0 - jaccard_chunk
+        square_dist_dice[i:end, :] = 1.0 - dice_chunk
+        
+    np.fill_diagonal(square_dist_jaccard, 0.0)
+    np.fill_diagonal(square_dist_dice, 0.0)
+    
+    square_dist_jaccard = np.clip(square_dist_jaccard, 0.0, 1.0)
+    square_dist_dice = np.clip(square_dist_dice, 0.0, 1.0)
+    
+    return genomes, A, square_dist_jaccard, squareform(square_dist_jaccard, checks=False), square_dist_dice
 
-    np.fill_diagonal(square_dist, 0.0) 
-    square_dist = np.clip(square_dist, 0.0, 1.0) 
-    return genomes, A, square_dist, squareform(square_dist, checks=False)
-
-def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=2, metadata_file=None, colour_col="Family", network_cols="all", logger=None, square_dist=None):
+def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=2, metadata_file=None, colour_col="Family", network_cols="all", logger=None, square_dist_jaccard=None, square_dist_dice=None):
     if not HAS_NETWORKIT:
         if logger: logger.error("NetworKit not installed. Skipping hierarchy.")
         return
-    
-    if square_dist is None:
-        if logger: logger.error("square_dist matrix is required for Complete Linkage clustering. Skipping hierarchy.")
+        
+    if square_dist_jaccard is None or square_dist_dice is None:
+        if logger: logger.error("Distance matrices are required for Complete Linkage clustering. Skipping hierarchy.")
         return
     
     mat_path = f"{binary_prefix}_matrix.npz"
@@ -457,7 +476,7 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
     else:
         genome_prot_counts = collections.defaultdict(int)
 
-    # External Metadata Loading for Network Export
+    # Loading of external metadata for export of network
     meta_dict = {}
     target_cols = []
     
@@ -467,7 +486,7 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
             if "Genome" not in m_df.columns:
                 m_df.rename(columns={m_df.columns[0]: "Genome"}, inplace=True)
                 
-            # Determine which columns to keep based on the user's input
+            # Determine which columns to keep based on the CLI input
             if network_cols.lower() == "all":
                 target_cols = [c for c in m_df.columns if c != "Genome"]
             else:
@@ -546,59 +565,31 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
         group_mat = A[indices]
         return np.where(group_mat.sum(axis=0).A1 >= (threshold * len(indices)))[0]
 
-    def get_partition_map(graph, use_leiden=True):
-        comm_map = collections.defaultdict(list)
-        global_comm_id = 0
-        
+    def get_partition_map(graph):      
         cc = nk.components.ConnectedComponents(graph)
-        cc.run()
-        
-        for comp_nodes in cc.getComponents():
-            # Bypass if requested or if it's a single node
-            if len(comp_nodes) == 1 or not use_leiden:
-                for node in comp_nodes:
-                    comm_map[global_comm_id].append(node)
-                global_comm_id += 1
-                continue
-            
-            # Leiden execution (retained for structural integrity, though now bypassed for Family islands)
-            raw_subgraph = nk.graphtools.subgraphFromNodes(graph, comp_nodes)
-            subgraph = nk.graph.Graph(len(comp_nodes), weighted=True)
-            new_to_old = {new: old for new, old in enumerate(comp_nodes)}
-            old_to_new = {old: new for new, old in enumerate(comp_nodes)}
-            
-            for u, v, w in raw_subgraph.iterEdgesWeights():
-                subgraph.addEdge(old_to_new[u], old_to_new[v], w)
-            
-            part = nk.community.ParallelLeiden(subgraph, iterations=10).run().getPartition()
-            
-            for local_node, local_comm in enumerate(part.getVector()):
-                comm_map[global_comm_id + local_comm].append(new_to_old[local_node])
-            
-            global_comm_id += part.numberOfSubsets()
-        
-        return comm_map
+        cc.run()       
+      
+        return cc.getPartition().subsetMap()
 
     lineage_res, sig_res = [], []
-    if logger: logger.info("Building Virus Taxonomy via Hybrid Network/Complete Linkage...")
+    if logger: logger.info("Building Strict Phage Taxonomy via Hybrid Network/Complete Linkage...")
 
     # Broad Network Sweep (Find disconnected "Islands")
     root_indices = list(range(num_genomes))
     global_network_file = os.path.join(output_dir, "phage_global_network_edges.csv")
     
     # Use a permissive Jaccard (0.05) to group distant relatives into islands
-    islands_map = get_partition_map(build_graph(root_indices, 0.05, save_edgelist_path=global_network_file), use_leiden=False)
-    
+    islands_map = get_partition_map(build_graph(root_indices, 0.05, save_edgelist_path=global_network_file))    
     global_fam_counter = 1
     global_subfam_counter = 1
     global_genus_counter = 1
 
-    # Parse and Split Families using Complete Linkage
+    # Parse and split families using complete Linkage
     for island_id, island_local_idx in islands_map.items():
         if len(island_local_idx) < 1: continue
         island_idx = [root_indices[i] for i in island_local_idx]
         
-    # If it's a single genome, it represents its own lineage
+    # If it is a single genome, it represents its own lineage
         if len(island_idx) == 1:
             f_label = f"Family_{global_fam_counter}"
             sf_label = f"{f_label}_SF_{global_subfam_counter}"
@@ -624,18 +615,24 @@ def run_phage_hierarchy_analysis(binary_prefix, output_dir, min_shared_clusters=
             global_fam_counter += 1; global_subfam_counter += 1; global_genus_counter += 1
             continue
 
-        # Extract the distance matrix just for this Island
-        island_dist_matrix = square_dist[np.ix_(island_idx, island_idx)]
-        island_condensed = squareform(island_dist_matrix, checks=False)
+        # Extract the distance matrices just for this Island
+        island_dist_jaccard = square_dist_jaccard[np.ix_(island_idx, island_idx)]
+        island_dist_dice = square_dist_dice[np.ix_(island_idx, island_idx)]
         
-        # Run Complete Linkage - added to eliminate chaining effects
-        Z = linkage(island_condensed, method='complete')
+        # Convert to condensed 1D arrays for SciPy linkage
+        island_condensed_jaccard = squareform(island_dist_jaccard, checks=False)
+        island_condensed_dice = squareform(island_dist_dice, checks=False)
         
-        # Define taxonomic cuts based on Distance (Distance = 1.0 - Jaccard)
-        fam_labels = fcluster(Z, t=0.95, criterion='distance')      # Max distance 0.90 (Min 5% shared globally)
-        subfam_labels = fcluster(Z, t=0.70, criterion='distance')   # Max distance 0.70 (Min 30% shared globally)
-        genus_labels = fcluster(Z, t=0.40, criterion='distance')    # Max distance 0.40 (Min 60% shared globally)
-
+        # Run Complete Linkage on both metrics
+        Z_jaccard = linkage(island_condensed_jaccard, method='complete')
+        Z_dice = linkage(island_condensed_dice, method='complete')
+        
+        # Define taxonomic cuts based on the hybrid strategy; DICE for f and sf, Jaccard for g
+        fam_labels = fcluster(Z_dice, t=0.95, criterion='distance')      # Dice for deep structural splits
+        subfam_labels = fcluster(Z_dice, t=0.70, criterion='distance')   # Dice for deep structural splits
+        genus_labels = fcluster(Z_jaccard, t=0.40, criterion='distance') # Jaccard for high-resolution tip splits
+        
+       
         # ----------------- FAMILY LEVEL -----------------
         fam_map = collections.defaultdict(list)
         for i, f_id in enumerate(fam_labels): fam_map[f_id].append(i)
@@ -864,7 +861,7 @@ def main():
     parser.add_argument("-t", "--threads", type=int, default=16, help="Number of threads.")
     parser.add_argument("-mem", "--duckdb_mem", type=str, required=True, default="16GB", help="Amount of RAM in GB allocated to database, e.g. 16GB")
     parser.add_argument("-ids", "--min_seq_ids", type=str, default="0.7", help="comma-separated list of minimum sequence identities to assess, e.g. 0.3,0.5,0.7")
-    parser.add_argument("-c", "--coverage", type=float, default=0.5, help="minimum coverage threshold to pass to MMSeqs2, e.g. 0.8 = 80% coverage")
+    parser.add_argument("-c", "--coverage", type=float, default=0.5, help="minimum coverage threshold to pass to MMSeqs2, e.g. 0.8 = 80%% coverage")
     parser.add_argument("-min", "--min_shared_clusters", type=int, default=2, help="minimum number of core shared protein clusters to define network groups.")
     parser.add_argument("-f", "--fig_format", type=str, default="png", choices=["png", "pdf", "svg"], help="format for static figures; binary presence/absence, Jaccard similarity heatmap and UpSet plot")
     parser.add_argument("--force_jaccard", action="store_true", help="Force the generation of the dense Jaccard distance matrix and Nexus format dendrogram regardless of the number of input genomes")
@@ -954,14 +951,14 @@ def main():
 
         core_clusters_csv = os.path.join(results_dir, f"core_protein_clusters_seqid_{seqid_str}.csv")
         extract_core_clusters(binary_prefix, core_clusters_csv, run_logger)
-
-        genomes, genomes_by_clusters_sparse, square_dist, condensed_dist = load_and_calculate_jaccard(binary_prefix, run_logger)
-
+        
+        # 1. Capture the new Dice output
+        genomes, genomes_by_clusters_sparse, square_dist_jaccard, condensed_dist, square_dist_dice = load_and_calculate_distances(binary_prefix, run_logger)
+        
         if genomes is not None:
-            num_genomes = len(genomes) # Moved up to use for the CSV check
-
+            num_genomes = len(genomes) 
             if num_genomes < 1000 or args.force_jaccard:
-                jaccard_sim_matrix = pd.DataFrame(1.0 - square_dist, index=genomes, columns=genomes)
+                jaccard_sim_matrix = pd.DataFrame(1.0 - square_dist_jaccard, index=genomes, columns=genomes)
                 global_linkage = linkage(condensed_dist, method="complete", optimal_ordering=True)
                 ordered_indices = leaves_list(global_linkage)
                 jaccard_sim_matrix = jaccard_sim_matrix.iloc[ordered_indices, ordered_indices]
@@ -969,8 +966,13 @@ def main():
             else:
                 if run_logger:
                     run_logger.info(f"Dataset contains {num_genomes} genomes (>=1000). Skipping dense Jaccard CSV generation. Use --force_jaccard to override.")
-            
-            run_phage_hierarchy_analysis(binary_prefix, results_dir, min_shared_clusters=args.min_shared_clusters, metadata_file=args.metadata, colour_col=args.colour_by, network_cols=args.network_cols, logger=run_logger, square_dist=square_dist)
+                    
+            # 2. Pass both matrices into the hierarchy analysis
+            run_phage_hierarchy_analysis(
+                binary_prefix, results_dir, min_shared_clusters=args.min_shared_clusters, 
+                metadata_file=args.metadata, colour_col=args.colour_by, network_cols=args.network_cols, 
+                logger=run_logger, square_dist_jaccard=square_dist_jaccard, square_dist_dice=square_dist_dice
+            )
 
             base_vis = os.path.join(results_dir, f"cluster_vis_seqid_{seqid_str}")
             if len(genomes) > 1000:
@@ -982,12 +984,12 @@ def main():
                 )
             if num_genomes <= 1000 or args.force_jaccard:
                 nexus_out = os.path.join(results_dir, f"jaccard_distances_seqid_{seqid_str}.nex")
-                generate_jaccard_nexus(genomes, square_dist, nexus_out, run_logger)
+                generate_jaccard_nexus(genomes, square_dist_jaccard, nexus_out, run_logger)
             else:
                 if run_logger: 
                     run_logger.info(f"Dataset contains {num_genomes} genomes (>1000). Skipping dense NEXUS matrix generation.")
                 
-            if len(genomes) <= 1000: run_visualization(genomes, genomes_by_clusters_sparse, square_dist, condensed_dist, base_vis, args.fig_format, args.dpi, run_logger, args.no_vis)
+            if len(genomes) <= 1000: run_visualization(genomes, genomes_by_clusters_sparse, square_dist_jaccard, condensed_dist, base_vis, args.fig_format, args.dpi, run_logger, args.no_vis)
             else: run_scalable_visualization(genomes, genomes_by_clusters_sparse, base_vis, args.metadata, args.colour_by, run_logger)
 
         if not args.no_vis: 
