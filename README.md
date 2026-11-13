@@ -5,14 +5,14 @@
 # VORTEX - Viral Ortholog Relationships, Taxonomy, and EXploration
 
 ## About VORTEX
-VORTEX is designed to cluster bacteriophage proteins and enable the examination of relationships between genomes based on shared proteins. To achieve this in a timely manner, VORTEX employs MMSeqs2 cluster and then stores information on the clusters using convertalis. The protein clusters are exported as multi-fasta files and mapped to each genome alongside statistics of protein lengths, minimum and maximum sequence identity. The percentage of protein clusters shared between pairs of genomes is used to calculate the Jaccard distance.
+VORTEX is designed to cluster bacteriophage proteins and enable the examination of relationships between genomes based on shared proteins. To achieve this in a timely manner, VORTEX employs MMSeqs2 cluster and then stores information on the clusters using convertalis. The protein clusters are exported as multi-fasta files and mapped to each genome alongside statistics of protein lengths, minimum and maximum sequence identity. The percentage of protein clusters shared between pairs of genomes is used to calculate Jaccard and Sorensen-Dice distance matrices.
 
-To assign genomes into groups, a large connected component network is created which is then broken down using a minimum Jaccard threshold of 0.05. Heirarchical clustering (complete linkage) of the network is then used to classify the genomes into three levels (loosely corresponding to the taxonomic ranks of family, subfamily and genus). At each level, the number and identity of core protein clusters is determined. 
+To assign genomes into groups, a large connected component network is created which is then broken down using a minimum Jaccard threshold of 0.05. Heirarchical clustering (complete linkage) of the network is then used to classify the genomes into three levels (loosely corresponding to the taxonomic ranks of family, subfamily and genus). For family and subfamily levels, the Sorensen-Dice matrix is used, with the Jaccard distance used for the assignment of genera. At each level, the number and identity of core protein clusters is determined. 
 
-VORTEX is agnostic to the formal ICTV taxonomy, and does not use the established taxonomy to train assignments. This is deliberate, since ranks up to and including family should demonstrate the presence of core genes that are detectable by standard methods of determining sequence similarity. 
+VORTEX is agnostic to the formal ICTV taxonomy, that is, it does not use the established taxonomy to train assignments but instead solely relies upon the distance matrices calculated from shared protein clusters between genome. This is deliberate, since ranks up to and including family should demonstrate the presence of core genes that are detectable by standard methods of determining sequence similarity. 
 
 ## Installation
-VORTEX can be installed using miniforge. Clone the github repository and use the yaml file to create an environment with the required packages and dependancies
+VORTEX can be installed using miniforge. A Docker image will be made available in the near future. Clone the github repository and use the yaml file to create an environment with the required packages and dependancies
 ```
 conda env create --file environment.yml
 conda activate vortex
@@ -100,7 +100,7 @@ A csv file mapping all proteins to their respective protein cluster.
 
 
 #### Sparse matrices  
-By default, the matrices of shared proteins and jaccard similarities are stored as sparse matrices to avoid the creation of extremely large csv output files.
+By default, the matrices of shared proteins and jaccard similarities are stored as sparse matrices to avoid the creation of very large csv files.
 
 `protein_cluster_matrix_binary_seqid`  
 The binary matrix presents protein clusters as rows and genomes as columns, where the presence or absence of a protein is denoted in binary as 1 or 0, respectively. 
@@ -128,7 +128,7 @@ Command line arguments:
 ```
 
 ### subset_cluster_results.py
-The results of a large-scale analysis can be downsampled using a list of accession numbers. This script will re-generate the output files to only include the genomes provided. Note however that the metrics provided in the binary and count matrix outputs will not be changed.
+The results of a large-scale analysis can be downsampled using a list of accession numbers. This script will re-generate the output files to only include the genomes provided. Note however that the metrics provided in the binary and count matrix outputs will still report the calculations from the entire initial dataset.
 
 Command line arguments:
 ```
@@ -143,7 +143,7 @@ Command line arguments:
 ```
 
 ### scrape_vmr.py
-This script can be used to download and parse the ICTV Virus Metadata Resource to create a metadata file compatible with VORTEX.
+This script can be used to download and parse the ICTV Virus Metadata Resource (VMR) to create a metadata file compatible with VORTEX. If this script fails, it is likely that the ICTV VMR has changed so please report this as an issue so that we can refactor the script.
 
 Command line arguments
 ```
@@ -182,6 +182,3 @@ Map new metadata to an existing VORTEX network and optionally filter by the netw
 -c, --clean # Remove existing metadata from the network before mapping
 -w, --min_weight #  Minimum jaccard threshold to retain an edge, e.g. -w 0.05: remove all edges <= 0.05
 ```
-
-## To-do
-> - Singleton nodes are dropped from the network output as they have no connected edges - resolve behaviour
